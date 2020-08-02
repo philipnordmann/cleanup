@@ -39,8 +39,6 @@ def cleanup(path, types, retention, action, dryrun=False):
         
         g = glob.glob(f'{path}/**/*.{type}', recursive=True)
 
-        affected_files += len(g)
-
         if action != 'archive' or dryrun:
             for file in g:
                 if os.path.getmtime(file) < check_time:
@@ -49,14 +47,18 @@ def cleanup(path, types, retention, action, dryrun=False):
                     elif action == 'delete':
                         logging.debug(f'deleting {file}')
                         os.remove(file)
+                    affected_files += 1
 
         elif action == 'archive':
             output_filename = f'{path}/cleanup_{type}_{now}.tar.gz'
             if len(g) > 0:
                 with tarfile.open(output_filename, "w:gz") as tar:
                     for file in g:
-                        logging.debug(f'archiving {file} into {output_filename}')
-                        tar.add(file, arcname=os.path.basename(file))
+                        if os.path.getmtime(file) < check_time:
+                            logging.debug(f'archiving {file} into {output_filename}')
+                            tar.add(file, arcname=os.path.basename(file))
+                            affected_files += 1
+                            
                     for file in g:
                         logging.debug(f'deleting {file}')
                         os.remove(file)
