@@ -1,4 +1,5 @@
 from configparser import ConfigParser
+from argparse import ArgumentParser
 import re
 import glob
 import os
@@ -64,9 +65,21 @@ def cleanup(path, types, retention, action, dryrun=False):
     
 
 def main():
+
+    arg_parser = ArgumentParser()
+    arg_parser.add_argument('-c', '--config', help='path to settings.ini')
+    arg_parser.add_argument('-v', '--verbose', action='store_true', help='sets log level to debug')
+    
+    args = arg_parser.parse_args()
+
+    settings_file = args.config
+
     parser = ConfigParser()
-    parser.read('settings.ini')
-    if 'log_level' in parser['general']:
+    parser.read(settings_file)
+
+    if args.verbose:
+        level = log_levels['debug']
+    elif 'log_level' in parser['general']:
         level = log_levels[parser['general']['log_level'].lower()]
     else:
         level = log_levels['info']
