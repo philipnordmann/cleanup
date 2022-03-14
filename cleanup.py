@@ -8,6 +8,8 @@ import tarfile
 from datetime import datetime
 import logging
 import multiprocessing
+import itertools
+import uuid
 
 
 log_levels = {
@@ -17,6 +19,8 @@ log_levels = {
     'error': logging.ERROR
 }
 
+def multiple_file_types(*patterns):
+    return itertools.chain.from_iterable(glob.iglob(pattern, recursive=True) for pattern in patterns)
 
 def dhms(s):
     time_in_s = {'d': 86400, 'h': 3600, 'm': 60, 's': 1}
@@ -28,48 +32,68 @@ def dhms(s):
                 total += int(match.strip(key)) * value
     return total
 
-def cleanup(path, types, retention, action, dryrun=False):
-
+def action_remove(files: list, filter_func, dryrun=False) -> int:
     affected_files = 0
-
-    for type in types:
-        
-        check_time = time.time() - retention
-        now = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
-        
-        g = glob.glob(f'{path}/**/*.{type}', recursive=True)
-
-        if action != 'archive' or dryrun:
-            for file in g:
-                if os.path.getmtime(file) < check_time:
-                    if action == 'print' or dryrun:
-                        logging.info(file)
-                    elif action == 'delete':
-                        logging.debug(f'deleting {file}')
-                        os.remove(file)
-                    affected_files += 1
-
-        elif action == 'archive':
-            output_filename = f'{path}/cleanup_{type}_{now}.tar.gz'
-            if len(g) > 0:
-                with tarfile.open(output_filename, "w:gz") as tar:
-                    for file in g:
-                        if os.path.getmtime(file) < check_time:
-                            logging.debug(f'archiving {file} into {output_filename}')
-                            tar.add(file, arcname=os.path.basename(file))
-                            affected_files += 1
-                            
-                    for file in g:
-                        logging.debug(f'deleting {file}')
-                        os.remove(file)
-    
+    for file in files:
+        if filter_func(file):
+            affected_files += 1
+            if not dryrun:
+                logging.debug(f'would remove {file}, but dryrun is active')
+            else:
+                logging.debug(f'remove {file}')
+                os.remove(file)
     return affected_files
+
+
+def action_echo(files: list, filter_func, dryrun=False) -> int:
+    affected_files = 0
+    for file in files:
+        affected_files += 1
+        if filter_func(file):
+            logging.info(f'{file} is out of retention')
+    return affected_files
+
+
+def action_archive(files: list, filter_func, dryrun=False, basepath=".", name=None) -> int:
+    now = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+    if not name:
+        name = uuid.uuid4().hex
+    output_filename = f'{basepath}/cleanup_{name}_{now}.tar.gz'
+    affected_files = 0
+    with tarfile.open(output_filename, "w:gz") as tar:
+        for file in files:
+            if filter_func(file):
+                affected_files += 1
+                logging.debug(f'archiving {file} into {output_filename}')
+                tar.add(file, arcname=f'{os.path.dirname(file).replace(basepath, "", 1)}/{os.path.basename(file)}')
+                logging.debug(f'deleting {file}')
+                os.remove(file)
+    if affected_files == 0:
+        logging.debug(f'removing {output_filename}, it was empty')
+        os.remove(output_filename)
+    return affected_files
+
+
+def cleanup(name: str, path: str, types: list, retention: int, action: str, dryrun=False) -> int:
+
+    logging.info(f'cleaning up {path}')
     
+    patterns = [f'{path}/**/*{type}' for type in types]
+    files = multiple_file_types(*patterns)
+    
+    filter_func = lambda item: os.path.isfile(item) and os.path.getmtime(item) < (datetime.now().timestamp() - retention)
+    
+    if action == 'echo':
+        return action_echo(files, filter_func)
+    elif action == 'remove':
+        return action_remove(files, filter_func)
+    elif action == 'archive':
+        return action_archive(files, filter_func, name=name)
 
 def main():
 
     arg_parser = ArgumentParser()
-    arg_parser.add_argument('-c', '--config', help='path to settings.ini')
+    arg_parser.add_argument('-c', '--config', help='path to settings.ini', default='settings.ini')
     arg_parser.add_argument('-v', '--verbose', action='store_true', help='sets log level to debug')
     
     args = arg_parser.parse_args()
@@ -86,7 +110,7 @@ def main():
     else:
         level = log_levels['info']
 
-    logging.basicConfig(level=level)
+    logging.basicConfig(level=level, format='%(asctime)s %(levelname)s %(message)s')
 
     folders = [s for s in parser.sections() if s != 'general']
 
@@ -96,7 +120,8 @@ def main():
         types = parser[folder]['types'].split(' ')
         retention = dhms(parser[folder]['retention'])
         action = parser[folder]['action']
-        args.append((folder, types, retention, action))
+        name = parser[folder].get('name')
+        args.append((name, folder, types, retention, action))
 
     affected_files = 0
 
